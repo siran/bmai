@@ -1,134 +1,137 @@
-# bmai — Jack Noise + Spectrum Locks (Presence & Modulation)
+# presence_lock.py — Presence via EM‑coupled modulation structure
 
-This repo explores a surprisingly sensitive “sensor” you can build with **no mic capsule** and **no explicit sensor**:
+This tool detects **presence** by tracking **structure** (not raw power) in EM‑coupled noise that appears inside an audio interface bandwidth.
 
-- Plug a cable into your computer’s **mic/line-in** jack.
-- Leave the far end **floating** (acts like an antenna).
-- Record the input as an audio stream.
-- Analyze it as **noise + interference**, not “audio content”.
+Truthful claims:
+- Detects presence via **EM‑coupled modulation patterns**.
+- Sees **low‑frequency structure** (0.5–30 Hz) in the **envelope** of high‑frequency spurs.
+- Sensitive to proximity, posture, and movement.
 
-Even when nothing is “connected”, the analog front-end + floating cable can pick up a mix of:
-- acoustic bleed / mechanical coupling,
-- mains hum & harmonics (50/60 Hz + multiples),
-- body proximity (capacitance/grounding changes),
-- general electromagnetic interference in the environment.
-
-The goal is to **measure and visualize** what changes, then test hypotheses with controls.
-
----
-
-## Scripts
-
-### 1) `live_noise_scope.py`
-Quick live scope: RMS + bandpowers + strongest spectral peaks.
-
-Run:
-```bash
-python live_noise_scope.py --list
-python live_noise_scope.py --device 5
-```
-
-### 2) `bmai.py`
-Full-screen spectrum view + sweep-lock + modulation estimate (breath/heart bands).
-
-Run:
-```bash
-python bmai.py --list
-python bmai.py --device 5
-```
-
-### 3) `presence_lock.py`
-Practical “presence detector”:
-- chooses several stable peaks (“locks”),
-- tracks them with Goertzel,
-- compares current lock-shape vector to a baseline → presence index,
-- TUI + optional matplotlib plot,
-- CSV logging with rich columns.
-
-Run:
-```bash
-python presence_lock.py --list
-python presence_lock.py --device 5 --plot --csv run.csv
-```
-
-Hotkeys:
-- `b` baseline (5s delay: step away)
-- `l` force relock
-- `q` quit
-
-### 4) `analyze_csv.py`
-Offline plotting + simple stats from a recorded CSV.
-
-Run:
-```bash
-python analyze_csv.py run.csv
-```
-
----
-
-## Hardware setup
-
-- Plug any cable into the mic/line-in jack.
-- Leave the other end floating (unconnected).
-- Keep cable layout consistent when testing.
-
-**Windows note:** Many drivers apply “Enhancements”, AGC, noise suppression.
-Disable them for raw behavior if you can.
-
----
-
-## What to do next (repeatable tests)
-
-1) **Proximity test**
-Baseline empty room → approach cable with hand → step away.
-
-2) **Grounding test**
-Touch a grounded object vs stand isolated.
-
-3) **Cable geometry**
-Coil vs straight vs near power brick.
-
-4) **Controls**
-Repeat with:
-- cable unplugged,
-- different audio device / host API,
-- laptop on battery vs plugged in,
-- Wi‑Fi off vs on.
-
----
-
-## CSV columns (what gets logged)
-
-The logger is designed for later science.
-
-Core:
-- `t` (unix seconds), `dt_iso` (UTC-ish iso), `frame_idx`
-- `idx` (presence index), `here` (0/1), `here_thresh`
-- `rms_dbfs`
-
-Baseline + decomposition (so you can debug *why* idx changed):
-- `baseline_set` (0/1 when baseline captured this frame)
-- `dshape`, `dhum`, `dhf`
-- `hum_rel_db`, `hf_floor_db`
-
-Locks (for K locks, default K=6):
-- `lock_hz_0..K-1`
-- `lock_db_0..K-1`   (smoothed rel power, dB, Goertzel / total power)
-- `track_k`, `track_hz`, `track_db` (the currently strongest lock)
-
-Modulation summary:
-- `breath_hz`, `heart_hz` (dominant peak estimates from `track_db` history)
+Important limits:
+- With `FS=48000`, the spectrum view is limited to **0–24 kHz (Nyquist)**.
+- This is **not** an RF spectrum analyzer. It observes **demodulated / aliased** products that land in audio/ultrasonic.
 
 ---
 
 ## Requirements
 
+Python packages:
+- `numpy`
+- `scipy`
+- `sounddevice`
+- `matplotlib` (optional, for plots)
+
+Windows: `msvcrt` is used for hotkeys (built-in).
+
+Install example:
 ```bash
-pip install -r requirements.txt
+pip install numpy scipy sounddevice matplotlib
 ```
 
 ---
 
-## License
+## Quick start
 
-Pick one: MIT / CC-BY / etc.
+### 1) One‑time device selection (writes cache)
+Sweeps input devices, scores them, and saves the best to a cache JSON.
+
+```bash
+python presence_lock.py --setup --setup-plot
+```
+
+This creates a cache file next to the script:
+- `presence_lock_device_cache.json`
+
+### 2) Normal run (no device arg needed)
+Auto-uses the cached device.
+
+```bash
+python presence_lock.py --plot-spectrum
+```
+
+---
+
+## Hotkeys (while running)
+
+- `b` = capture baseline (step away + stay quiet)
+- `l` = force relock (re-pick HF carriers)
+- `q` = quit
+
+Baseline matters. Do it in a stable “no‑presence” state.
+
+---
+
+## What to look at
+
+### Console lines
+- `pres| idx: ... HERE/----`  
+  Presence index (structure change) + threshold.
+
+- `env | ... (envΔ=..., lockΔ=...)`  
+  Envelope-structure distance (0.5–30 Hz) and lock-shape distance.
+
+- `band| delta/theta/alpha/beta`  
+  Dominant modulation peaks in each band (if enough history).
+
+### Plots (`--plot-spectrum`)
+- Presence index vs time + threshold
+- Envelope structure distance vs time
+- Envelope spectrum (0.5–30 Hz)
+- Audio-band PSD (optional) with mains ladder markers
+
+---
+
+## Recommended settings
+
+### For alpha/beta (~8–30 Hz) structure
+Keep envelope sampling high enough:
+- Default: `--env-hz 64`  → Nyquist 32 Hz (covers up to 30 Hz)
+
+You can raise it (CPU cost rises slightly):
+```bash
+python presence_lock.py --plot-spectrum --env-hz 100
+```
+
+### Make index mostly envelope-driven
+```bash
+python presence_lock.py --plot-spectrum --w-shape 0 --w-hum 0 --w-hf 0 --w-env 6
+```
+
+---
+
+## Common issues
+
+### “NO AUDIO CALLBACKS”
+That device/host API is not providing input callbacks (common with some WDM-KS/WASAPI modes).
+Fix:
+- Run `--setup` and choose a different device/host API.
+- Avoid WDM-KS unless you know it works (or use `--allow-wdmks`).
+
+### Plot shows only to ~20k
+Matplotlib tick labels may stop at 20k even if axis is 24k. Force it:
+```bash
+python presence_lock.py --plot-spectrum --plot-fmax 24000
+```
+
+---
+
+## Output / logging
+
+Enable CSV:
+```bash
+python presence_lock.py --csv run.csv --plot-spectrum
+```
+
+The CSV includes:
+- presence index, threshold, lock frequencies + levels
+- envelope band dominants (delta/theta/alpha/beta)
+- hum/hf/voice proxies
+
+---
+
+## Safety + interpretation
+
+This tool **does not** read brain waves.  
+It detects **presence-related coupling changes** that modulate ambient EM‑coupled carriers into audio/ultrasonic bands.
+
+If you want true MHz–GHz RF analysis, you need an SDR or spectrum analyzer.
